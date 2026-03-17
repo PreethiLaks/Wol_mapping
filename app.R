@@ -68,10 +68,7 @@ make_tier <- function(x, valid_mask, breaks, labels) {
   out
 }
 
-coverage_table_pfpr_denom_afro <- function(tier_r, v0, pfpr_band_afro_r) {
-  A <- cellSize(tier_r, unit = "km")
-  names(A) <- "cell_km2"
-  
+coverage_table_countries <- function(tier_r, v0) {
   count_countries <- function(mask_r, v0) {
     ex <- terra::extract(mask_r, v0, fun = sum, na.rm = TRUE, weights = TRUE)
     if (is.null(ex) || nrow(ex) == 0) return(0)
@@ -80,50 +77,19 @@ coverage_table_pfpr_denom_afro <- function(tier_r, v0, pfpr_band_afro_r) {
     sum(vals > 0)
   }
   
-  get_denom <- function(k) {
-    mk <- tier_mask_value(pfpr_band_afro_r, k)
-    mk <- mask(mk, v0)
-    val <- as.numeric(global(mask(A, mk), "sum", na.rm = TRUE)[1, 1])
-    if (!is.finite(val)) val <- 0
-    val
-  }
-  
-  get_stats <- function(k) {
-    mk <- if (identical(k, "any")) tier_any_mask(tier_r) else tier_mask_value(tier_r, k)
-    mk <- mask(mk, v0)
-    
-    area_km2 <- as.numeric(global(mask(A, mk), "sum", na.rm = TRUE)[1, 1])
-    pixels   <- as.numeric(global(mk, "sum", na.rm = TRUE)[1, 1])
-    
-    if (!is.finite(area_km2)) area_km2 <- 0
-    if (!is.finite(pixels)) pixels <- 0
-    
-    countries <- count_countries(mk, v0)
-    
-    c(area_km2 = area_km2, pixels = pixels, countries = countries)
-  }
-  
-  s1 <- get_stats(1)
-  s2 <- get_stats(2)
-  s3 <- get_stats(3)
-  sT <- get_stats("any")
-  
-  d1 <- get_denom(1)
-  d2 <- get_denom(2)
-  d3 <- get_denom(3)
-  dT <- d1 + d2 + d3
+  m1   <- mask(tier_mask_value(tier_r, 1), v0)
+  m2   <- mask(tier_mask_value(tier_r, 2), v0)
+  m3   <- mask(tier_mask_value(tier_r, 3), v0)
+  m123 <- mask(tier_any_mask(tier_r), v0)
   
   data.frame(
     Tier = c("Tier 1", "Tier 2", "Tier 3", "Tier 1-3 (total)"),
-    Area_km2 = c(s1["area_km2"], s2["area_km2"], s3["area_km2"], sT["area_km2"]),
-    Pct_of_AFRO_PfPR_band_km2 = c(
-      ifelse(d1 > 0, 100 * s1["area_km2"] / d1, NA_real_),
-      ifelse(d2 > 0, 100 * s2["area_km2"] / d2, NA_real_),
-      ifelse(d3 > 0, 100 * s3["area_km2"] / d3, NA_real_),
-      ifelse(dT > 0, 100 * sT["area_km2"] / dT, NA_real_)
+    Countries_covered = c(
+      count_countries(m1, v0),
+      count_countries(m2, v0),
+      count_countries(m3, v0),
+      count_countries(m123, v0)
     ),
-    Pixels = c(s1["pixels"], s2["pixels"], s3["pixels"], sT["pixels"]),
-    Countries_covered = c(s1["countries"], s2["countries"], s3["countries"], sT["countries"]),
     stringsAsFactors = FALSE
   )
 }
@@ -132,49 +98,58 @@ impact_table <- function(tier_r, layers, burden_r, pop_r) {
   bur_valid <- mask(burden_r, layers$burden_mask)
   pop_valid <- mask(pop_r, layers$burden_mask)
   
-  m1 <- tier_mask_value(tier_r, 1)
-  m2 <- tier_mask_value(tier_r, 2)
-  m3 <- tier_mask_value(tier_r, 3)
-  many <- tier_any_mask(tier_r)
+  m1   <- tier_mask_value(tier_r, 1)
+  m2   <- tier_mask_value(tier_r, 2)
+  m3   <- tier_mask_value(tier_r, 3)
+  m123 <- tier_any_mask(tier_r)
   
-  t1_cases <- as.numeric(global(mask(bur_valid, m1), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(t1_cases)) t1_cases <- 0
-  t2_cases <- as.numeric(global(mask(bur_valid, m2), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(t2_cases)) t2_cases <- 0
-  t3_cases <- as.numeric(global(mask(bur_valid, m3), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(t3_cases)) t3_cases <- 0
-  t123_cases <- as.numeric(global(mask(bur_valid, many), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(t123_cases)) t123_cases <- 0
+  # Population by tier
+  p1 <- as.numeric(global(mask(pop_valid, m1), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(p1)) p1 <- 0
+  p2 <- as.numeric(global(mask(pop_valid, m2), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(p2)) p2 <- 0
+  p3 <- as.numeric(global(mask(pop_valid, m3), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(p3)) p3 <- 0
+  p123 <- as.numeric(global(mask(pop_valid, m123), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(p123)) p123 <- 0
   
-  t1_pop <- as.numeric(global(mask(pop_valid, m1), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(t1_pop)) t1_pop <- 0
-  t123_pop <- as.numeric(global(mask(pop_valid, many), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(t123_pop)) t123_pop <- 0
+  # Mean annual cases by tier
+  c1 <- as.numeric(global(mask(bur_valid, m1), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(c1)) c1 <- 0
+  c2 <- as.numeric(global(mask(bur_valid, m2), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(c2)) c2 <- 0
+  c3 <- as.numeric(global(mask(bur_valid, m3), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(c3)) c3 <- 0
+  c123 <- as.numeric(global(mask(bur_valid, m123), "sum", na.rm = TRUE)[1, 1]); if (!is.finite(c123)) c123 <- 0
   
-  cases_per_1000_t1 <- ifelse(t1_pop > 0, 1000 * t1_cases / t1_pop, NA_real_)
-  
+  # Total WHO AFRO mean annual cases
   afro_cases_all <- as.numeric(global(mask(bur_valid, layers$v0), "sum", na.rm = TRUE)[1, 1])
   if (!is.finite(afro_cases_all) || afro_cases_all <= 0) afro_cases_all <- NA_real_
   
-  pct_all_afro_t1   <- ifelse(is.na(afro_cases_all), NA_real_, 100 * t1_cases / afro_cases_all)
-  pct_all_afro_t123 <- ifelse(is.na(afro_cases_all), NA_real_, 100 * t123_cases / afro_cases_all)
+  fmt_cases_pct <- function(x, total) {
+    if (is.na(total)) return(paste0(format(round(x), big.mark = ","), " (NA)"))
+    pct <- 100 * x / total
+    paste0(
+      format(round(x), big.mark = ","),
+      " (",
+      formatC(pct, format = "f", digits = 2),
+      "%)"
+    )
+  }
   
   data.frame(
     Metric = c(
-      "Tier-1 population benefiting",
-      "Tier-1 burden (cases/year)",
-      "Tier-2 burden (cases/year)",
-      "Tier-3 burden (cases/year)",
-      "Burden (Tier 1-3 combined) (cases/year)",
-      "Tier-1 burden per 1000 pop",
-      "Population benefiting (Tier 1-3 combined)",
-      "% of ALL-WHO-AFRO burden in Tier 1 (%)",
-      "% of ALL-WHO-AFRO burden in Tier 1-3 combined (%)"
+      "Population benefiting - Tier 1",
+      "Population benefiting - Tier 2",
+      "Population benefiting - Tier 3",
+      "Population benefiting - Tier 1-3 combined",
+      "Estimated mean annual cases - Tier 1 (% WHO AFRO)",
+      "Estimated mean annual cases - Tier 2 (% WHO AFRO)",
+      "Estimated mean annual cases - Tier 3 (% WHO AFRO)",
+      "Estimated mean annual cases - Tier 1-3 combined (% WHO AFRO)"
     ),
     Value = c(
-      format(round(t1_pop), big.mark = ","),
-      format(round(t1_cases), big.mark = ","),
-      format(round(t2_cases), big.mark = ","),
-      format(round(t3_cases), big.mark = ","),
-      format(round(t123_cases), big.mark = ","),
-      ifelse(is.na(cases_per_1000_t1), "NA", round(cases_per_1000_t1, 4)),
-      format(round(t123_pop), big.mark = ","),
-      ifelse(is.na(pct_all_afro_t1), "NA", formatC(pct_all_afro_t1, format = "f", digits = 6)),
-      ifelse(is.na(pct_all_afro_t123), "NA", formatC(pct_all_afro_t123, format = "f", digits = 6))
+      format(round(p1), big.mark = ","),
+      format(round(p2), big.mark = ","),
+      format(round(p3), big.mark = ","),
+      format(round(p123), big.mark = ","),
+      fmt_cases_pct(c1, afro_cases_all),
+      fmt_cases_pct(c2, afro_cases_all),
+      fmt_cases_pct(c3, afro_cases_all),
+      fmt_cases_pct(c123, afro_cases_all)
     ),
     stringsAsFactors = FALSE
   )
@@ -277,6 +252,24 @@ ADMIN0 <- vect(a0[a0$GID_0 %in% afro_iso, ])
 ADMIN1 <- vect(a1[a1$GID_0 %in% afro_iso, ])
 
 # ----------------------------
+# Precompute common template and aligned layers
+# ----------------------------
+ADMIN0_PFPR <- if (!identical(crs(ADMIN0), crs(PFPR_MEAN))) project(ADMIN0, crs(PFPR_MEAN)) else ADMIN0
+TEMPLATE <- crop(PFPR_MEAN, ADMIN0_PFPR, snap = "out")
+
+ADMIN0_ALIGNED <- if (!identical(crs(ADMIN0), crs(TEMPLATE))) project(ADMIN0, crs(TEMPLATE)) else ADMIN0
+ADMIN1_ALIGNED <- if (!identical(crs(ADMIN1), crs(TEMPLATE))) project(ADMIN1, crs(TEMPLATE)) else ADMIN1
+
+PFPR_ALIGNED <- to01(fast_align(PFPR_MEAN, TEMPLATE))
+ITN_ALIGNED  <- to01(fast_align(ITN_MEAN,  TEMPLATE))
+INC_ALIGNED  <- fast_align(INC_MEAN, TEMPLATE, method = "bilinear")
+POP_ALIGNED  <- fast_align(POP_MEAN, TEMPLATE, method = "near")
+
+SPECIES_ALIGNED <- lapply(species_rasters, function(r) fast_align(to01(r), TEMPLATE))
+
+CELL_AREA_KM2 <- cellSize(TEMPLATE, unit = "km")
+names(CELL_AREA_KM2) <- "cell_km2"
+# ----------------------------
 # Use-case rules
 # ----------------------------
 use_cases <- list(
@@ -337,18 +330,14 @@ ui <- fluidPage(
 # ----------------------------
 server <- function(input, output, session) {
   
-  afro_template <- reactive({
-    v0_pf <- if (!identical(crs(ADMIN0), crs(PFPR_MEAN))) project(ADMIN0, crs(PFPR_MEAN)) else ADMIN0
-    crop(PFPR_MEAN, v0_pf, snap = "out")
-  })
+  afro_template <- reactive(TEMPLATE)
   
   base_layers <- reactive({
-    tmpl <- afro_template()
+    tmpl <- TEMPLATE
+    v0 <- ADMIN0_ALIGNED
+    v1 <- ADMIN1_ALIGNED
     
-    v0 <- if (!identical(crs(ADMIN0), crs(tmpl))) project(ADMIN0, crs(tmpl)) else ADMIN0
-    v1 <- if (!identical(crs(ADMIN1), crs(tmpl))) project(ADMIN1, crs(tmpl)) else ADMIN1
-    
-    species_aligned <- lapply(species_rasters, function(r) fast_align(to01(r), tmpl))
+    species_aligned <- SPECIES_ALIGNED
     base_p <- species_aligned[[input$species]]
     pres_mask <- ifel(!is.na(base_p) & base_p > 0, 1, NA)
     
@@ -365,10 +354,10 @@ server <- function(input, output, session) {
     others_sum <- app(others_stack, sum)
     dom_share <- safe_div(base_p0, base_p0 + others_sum)
     
-    pfpr01 <- to01(fast_align(PFPR_MEAN, tmpl))
-    itn01  <- to01(fast_align(ITN_MEAN, tmpl))
-    inc_al <- fast_align(INC_MEAN, tmpl, method = "bilinear")
-    pop_al <- fast_align(POP_MEAN, tmpl, method = "near")
+    pfpr01 <- PFPR_ALIGNED
+    itn01  <- ITN_ALIGNED
+    inc_al <- INC_ALIGNED
+    pop_al <- POP_ALIGNED
     
     data_mask <- ifel(!is.na(pfpr01) & !is.na(itn01) & !is.na(base_p) & (base_p > 0), 1, NA)
     burden_mask <- ifel(!is.na(inc_al) & !is.na(pop_al) & (pop_al > 0) & (inc_al > 1e-12), 1, NA)
@@ -457,10 +446,9 @@ server <- function(input, output, session) {
     
     output[[paste0("cov_", case_name)]] <- renderTable({
       layers <- base_layers()
-      coverage_table_pfpr_denom_afro(
+      coverage_table_countries(
         overall_tier(layers, case_name),
-        layers$v0,
-        tier_pfpr_denom(layers, case_name)
+        layers$v0
       )
     })
   }
