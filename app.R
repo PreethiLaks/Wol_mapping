@@ -17,6 +17,7 @@ paths <- list(
   itn  = file.path("data", "ITN_use_rate.tif"),
   inc  = file.path("data", "Pf_Incidence_mean_2000.tif"),
   pop  = file.path("data", "POP_MEAN_2015_2025.tif"),
+  tt   = file.path("data", "Global_travel_time.tif"),
   gadm = file.path("data", "gadm_410.gpkg")
 )
 
@@ -230,6 +231,7 @@ plot_tier_map <- function(tier_r, layers, title_text, auto_zoom, zoom_pad) {
 PFPR_MEAN <- rast(paths$pfpr)
 ITN_MEAN  <- rast(paths$itn)
 INC_MEAN  <- rast(paths$inc)
+TT_MEAN <- rast(paths$tt)
 POP_MEAN  <- rast(paths$pop)
 
 species_rasters <- list(
@@ -263,6 +265,7 @@ ADMIN1_ALIGNED <- if (!identical(crs(ADMIN1), crs(TEMPLATE))) project(ADMIN1, cr
 PFPR_ALIGNED <- to01(fast_align(PFPR_MEAN, TEMPLATE))
 ITN_ALIGNED  <- to01(fast_align(ITN_MEAN,  TEMPLATE))
 INC_ALIGNED  <- fast_align(INC_MEAN, TEMPLATE, method = "bilinear")
+TT_ALIGNED <- fast_align(TT_MEAN, TEMPLATE, method = "bilinear")
 POP_ALIGNED  <- fast_align(POP_MEAN, TEMPLATE, method = "near")
 
 SPECIES_ALIGNED <- lapply(species_rasters, function(r) fast_align(to01(r), TEMPLATE))
@@ -319,7 +322,8 @@ ui <- fluidPage(
         tabPanel("Use case 1a", plotOutput("map_1a", height = 650), h4("Impact Summary"), tableOutput("impact_1a"), h4("Coverage"), tableOutput("cov_1a")),
         tabPanel("Use case 1b", plotOutput("map_1b", height = 650), h4("Impact Summary"), tableOutput("impact_1b"), h4("Coverage"), tableOutput("cov_1b")),
         tabPanel("Use case 2",  plotOutput("map_2",  height = 650), h4("Impact Summary"), tableOutput("impact_2"),  h4("Coverage"), tableOutput("cov_2")),
-        tabPanel("Use case 3",  plotOutput("map_3",  height = 650), h4("Impact Summary"), tableOutput("impact_3"),  h4("Coverage"), tableOutput("cov_3"))
+        tabPanel("Use case 3",  plotOutput("map_3",  height = 650), h4("Impact Summary"), tableOutput("impact_3"),  h4("Coverage"), tableOutput("cov_3")),
+        tabPanel("Use case 4", plotOutput("map_4", height = 650), h4("Impact Summary"), tableOutput("impact_4"), h4("Coverage"), tableOutput("cov_4"))
       )
     )
   )
@@ -358,6 +362,7 @@ server <- function(input, output, session) {
     itn01  <- ITN_ALIGNED
     inc_al <- INC_ALIGNED
     pop_al <- POP_ALIGNED
+    tt_al  <- TT_ALIGNED
     
     data_mask <- ifel(!is.na(pfpr01) & !is.na(itn01) & !is.na(base_p) & (base_p > 0), 1, NA)
     burden_mask <- ifel(!is.na(inc_al) & !is.na(pop_al) & (pop_al > 0) & (inc_al > 1e-12), 1, NA)
@@ -374,7 +379,8 @@ server <- function(input, output, session) {
       data_mask = data_mask,
       burden_mask = burden_mask,
       inc_al = inc_al,
-      pop_al = pop_al
+      pop_al = pop_al,
+      tt_al = tt_al
     )
   })
   
@@ -427,6 +433,52 @@ server <- function(input, output, session) {
     mask(out, layers$v0)
   }
   
+  overall_tier_uc4 <- function(layers) {
+    ste <- SPECIES_ALIGNED$stephensi
+    ste <- mask(ste, layers$v0)
+    tt  <- mask(layers$tt_al, layers$v0)
+    pf  <- mask(layers$pfpr01, layers$v0)
+    
+    ste_tier <- ifel(ste >= 0.75, 1,
+                     ifel(ste >= 0.15, 2,
+                          ifel(ste >= 0.05, 3, NA)
+                     )
+    )
+    
+    tt_tier <- ifel(tt <= 60, 1,
+                    ifel(tt <= 180, 2,
+                         ifel(tt <= 360, 3, NA)
+                    )
+    )
+    
+    pfpr_tier <- ifel(pf >= 0.40, 1,
+                      ifel(pf >= 0.15, 2,
+                           ifel(pf >= 0, 3, NA)
+                      )
+    )
+    
+    out <- rast(layers$tmpl)
+    values(out) <- NA
+    
+    out[ste_tier == 1 & tt_tier == 1 & pfpr_tier == 1] <- 1
+    
+    out[
+      ste_tier %in% c(1, 2) &
+        tt_tier %in% c(1, 2) &
+        pfpr_tier %in% c(1, 2) &
+        is.na(out)
+    ] <- 2
+    
+    out[
+      !is.na(ste_tier) &
+        !is.na(tt_tier) &
+        !is.na(pfpr_tier) &
+        is.na(out)
+    ] <- 3
+    
+    mask(out, layers$v0)
+  }
+  
   make_outputs <- function(case_name) {
     output[[paste0("map_", case_name)]] <- renderPlot({
       layers <- base_layers()
@@ -459,6 +511,30 @@ server <- function(input, output, session) {
       make_outputs(case_name)
     })
   }
+  
+  output$map_4 <- renderPlot({
+    layers <- base_layers()
+    plot_tier_map(
+      overall_tier_uc4(layers),
+      layers,
+      "Use case 4 - An. stephensi urban/peri-urban vulnerability",
+      input$auto_zoom,
+      input$zoom_pad
+    )
+  })
+  
+  output$impact_4 <- renderTable({
+    layers <- base_layers()
+    impact_table(overall_tier_uc4(layers), layers, burden_aligned(), layers$pop_al)
+  })
+  
+  output$cov_4 <- renderTable({
+    layers <- base_layers()
+    coverage_table_countries(
+      overall_tier_uc4(layers),
+      layers$v0
+    )
+  })
 }
 
 shinyApp(ui, server)
