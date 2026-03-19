@@ -18,7 +18,9 @@ paths <- list(
   inc  = file.path("data", "Pf_Incidence_mean_2000.tif"),
   pop  = file.path("data", "POP_MEAN_2015_2025.tif"),
   tt   = file.path("data", "Global_travel_time.tif"),
-  gadm = file.path("data", "gadm_410.gpkg")
+  gadm = file.path("data", "gadm_410.gpkg"),
+  # ── NEW: gambiae included for dominance calculation only, not mapped ────────
+  gam  = file.path("data", "2017_Anopheles_gambiae.Mean_Decompressed.geotiff")
 )
 
 for (nm in names(paths)) {
@@ -123,13 +125,35 @@ impact_table <- function(tier_r, layers, burden_r, pop_r) {
   pop_sums[!is.finite(pop_sums)] <- 0
   bur_sums[!is.finite(bur_sums)] <- 0
   
+  # ── DENOMINATOR 1: WHO AFRO (original) ──────────────────────────────────────
   afro_cases_all <- as.numeric(global(mask(bur_valid, layers$v0), "sum", na.rm = TRUE)[1, 1])
   if (!is.finite(afro_cases_all) || afro_cases_all <= 0) afro_cases_all <- NA_real_
   
-  fmt_cases_pct <- function(x, total) {
-    if (is.na(total)) return(paste0(format(round(x), big.mark = ","), " (NA)"))
-    pct <- 100 * x / total
-    paste0(format(round(x), big.mark = ","), " (", formatC(pct, format = "f", digits = 2), "%)")
+  # ── DENOMINATOR 2 (NEW): cases within species-present range (pres_mask) ────
+  # Rationale: pres_mask (base_p > 0) defines the outer boundary of where
+  # Wolbachia deployment is biologically relevant for the selected species.
+  # Dominance is now computed over all 5 vectors (including An. gambiae),
+  # so dom_share already reflects the correct competitive context.
+  # This answers "of all cases in the species range, what % are captured?"
+  species_range_denom <- as.numeric(
+    global(mask(bur_valid, layers$pres_mask), "sum", na.rm = TRUE)[1, 1]
+  )
+  if (!is.finite(species_range_denom) || species_range_denom <= 0) species_range_denom <- NA_real_
+  # ────────────────────────────────────────────────────────────────────────────
+  
+  fmt_pct <- function(x, total) {
+    if (is.na(total)) return("NA")
+    formatC(100 * x / total, format = "f", digits = 2)
+  }
+  
+  fmt_cases_row <- function(x) {
+    paste0(
+      format(round(x), big.mark = ","),
+      "  |  ",
+      fmt_pct(x, afro_cases_all), "% (AFRO)",
+      "  /  ",
+      fmt_pct(x, species_range_denom), "% (species range)"
+    )
   }
   
   data.frame(
@@ -138,20 +162,20 @@ impact_table <- function(tier_r, layers, burden_r, pop_r) {
       "Population benefiting - Tier 2",
       "Population benefiting - Tier 3",
       "Population benefiting - Tier 1-3 combined",
-      "Estimated mean annual cases - Tier 1 (% WHO AFRO)",
-      "Estimated mean annual cases - Tier 2 (% WHO AFRO)",
-      "Estimated mean annual cases - Tier 3 (% WHO AFRO)",
-      "Estimated mean annual cases - Tier 1-3 combined (% WHO AFRO)"
+      "Estimated mean annual cases - Tier 1",
+      "Estimated mean annual cases - Tier 2",
+      "Estimated mean annual cases - Tier 3",
+      "Estimated mean annual cases - Tier 1-3 combined"
     ),
     Value = c(
       format(round(pop_sums[1]), big.mark = ","),
       format(round(pop_sums[2]), big.mark = ","),
       format(round(pop_sums[3]), big.mark = ","),
       format(round(pop_sums[4]), big.mark = ","),
-      fmt_cases_pct(bur_sums[1], afro_cases_all),
-      fmt_cases_pct(bur_sums[2], afro_cases_all),
-      fmt_cases_pct(bur_sums[3], afro_cases_all),
-      fmt_cases_pct(bur_sums[4], afro_cases_all)
+      fmt_cases_row(bur_sums[1]),   # <- shows both % side by side
+      fmt_cases_row(bur_sums[2]),
+      fmt_cases_row(bur_sums[3]),
+      fmt_cases_row(bur_sums[4])
     ),
     stringsAsFactors = FALSE
   )
@@ -223,7 +247,8 @@ species_rasters <- list(
   arabiensis = rast(paths$ara),
   coluzzii   = rast(paths$col),
   moucheti   = rast(paths$mou),
-  stephensi  = rast(paths$ste)
+  stephensi  = rast(paths$ste),
+  gambiae    = rast(paths$gam)   # ── NEW: added to enable dropdown mapping
 )
 
 afro_iso <- c(
@@ -250,7 +275,13 @@ ITN_ALIGNED    <- to01(fast_align(ITN_MEAN,  TEMPLATE))
 INC_ALIGNED    <- fast_align(INC_MEAN, TEMPLATE, method = "bilinear")
 TT_ALIGNED     <- fast_align(TT_MEAN,  TEMPLATE, method = "bilinear")
 POP_ALIGNED    <- fast_align(POP_MEAN, TEMPLATE, method = "near")
+# ── All 5 species aligned at startup including gambiae ──────────────────────
+# gambiae is now in SPECIES_ALIGNED so it appears in the dropdown and
+# its presence probability is always included in dominance calculations
+# via setdiff() — when gambiae is selected it competes against the other 4,
+# and when another species is selected gambiae is in others_sum automatically.
 SPECIES_ALIGNED <- lapply(species_rasters, function(r) fast_align(to01(r), TEMPLATE))
+# ────────────────────────────────────────────────────────────────────────────
 
 # Precompute burden raster globally (pop * incidence / 1000) — species-independent
 BURDEN_GLOBAL  <- POP_ALIGNED * (INC_ALIGNED / 1000)
@@ -286,7 +317,7 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       selectInput("species", "Species mask",
-                  c("arabiensis", "coluzzii", "moucheti", "stephensi"),
+                  c("arabiensis", "coluzzii", "moucheti", "stephensi", "gambiae"),
                   selected = "moucheti"
       ),
       hr(),
@@ -318,7 +349,7 @@ server <- function(input, output, session) {
     base_p0  <- base_p; base_p0[is.na(base_p0)] <- 0
     
     others_stack <- rast(lapply(
-      setdiff(names(SPECIES_ALIGNED), sp),
+      setdiff(names(SPECIES_ALIGNED), sp),   # all 5 minus selected — gambiae included automatically
       function(nm) { r <- SPECIES_ALIGNED[[nm]]; r[is.na(r)] <- 0; r }
     ))
     others_sum <- app(others_stack, sum)
@@ -356,11 +387,20 @@ server <- function(input, output, session) {
       layers <- species_layers()
       
       tv <- {
-        ds  <- layers$dom_share
+        # Proportional dominance share with minimum presence filter ───────────
+        # dom_share = selected species / all 5 species combined (per pixel).
+        # Tiers reflect how much of the local vector pool the species represents.
+        # base_p >= 0.10 floor excludes pixels where MAP model has <10%
+        # confidence the species is present — below this, deployment is not
+        # meaningful regardless of dominance share.
+        ds <- layers$dom_share
+        bp <- SPECIES_ALIGNED[[input$species]]; bp[is.na(bp)] <- 0
+        valid_dom <- !is.na(layers$data_mask) & !is.na(layers$pres_mask) & bp >= 0.10
         out <- rast(TEMPLATE); values(out) <- NA
-        out[!is.na(layers$data_mask) & !is.na(layers$pres_mask) & ds >= 0.70] <- 1
-        out[!is.na(layers$data_mask) & !is.na(layers$pres_mask) & ds >= 0.40 & ds < 0.70] <- 2
-        out[!is.na(layers$data_mask) & !is.na(layers$pres_mask) & ds < 0.40]  <- 3
+        out[valid_dom & ds >= 0.70] <- 1
+        out[valid_dom & ds >= 0.40 & ds < 0.70] <- 2
+        out[valid_dom & ds <  0.40] <- 3
+        # ────────────────────────────────────────────────────────────────────
         out
       }
       
