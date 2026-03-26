@@ -69,15 +69,22 @@ make_tier <- function(x, valid_mask, breaks, labels) {
   out
 }
 
-# FIX: count countries using terra::relate instead of repeated extract()
+# Coverage table: countries eligible and area (km²) per tier
 coverage_table_countries <- function(tier_r, v0) {
   count_countries_fast <- function(mask_r, v0) {
-    # rasterize v0 to get a country-ID raster, then check overlap with mask
     cid <- rasterize(v0, mask_r, field = seq_len(nrow(v0)))
     hit <- !is.na(cid) & !is.na(mask_r)
     ids <- unique(na.omit(values(ifel(hit, cid, NA))))
     length(ids)
   }
+  
+  # ── NEW: compute eligible area in km² per tier ───────────────────────────
+  area_km2 <- function(mask_r) {
+    a <- as.numeric(global(mask(CELL_AREA_KM2, mask_r), "sum", na.rm = TRUE)[1, 1])
+    if (!is.finite(a)) return(0)
+    format(round(a), big.mark = ",")
+  }
+  # ────────────────────────────────────────────────────────────────────────
   
   m1   <- tier_mask_value(tier_r, 1)
   m2   <- tier_mask_value(tier_r, 2)
@@ -86,11 +93,17 @@ coverage_table_countries <- function(tier_r, v0) {
   
   data.frame(
     Tier = c("Tier 1", "Tier 2", "Tier 3", "Tier 1-3 (total)"),
-    Countries_covered = c(
+    Countries_eligible = c(          # ── renamed from Countries_covered
       count_countries_fast(m1,   v0),
       count_countries_fast(m2,   v0),
       count_countries_fast(m3,   v0),
       count_countries_fast(m123, v0)
+    ),
+    Area_km2 = c(                    # ── NEW: eligible area per tier
+      area_km2(m1),
+      area_km2(m2),
+      area_km2(m3),
+      area_km2(m123)
     ),
     stringsAsFactors = FALSE
   )
@@ -125,21 +138,9 @@ impact_table <- function(tier_r, layers, burden_r, pop_r) {
   pop_sums[!is.finite(pop_sums)] <- 0
   bur_sums[!is.finite(bur_sums)] <- 0
   
-  # ── DENOMINATOR 1: WHO AFRO (original) ──────────────────────────────────────
+  # ── DENOMINATOR: WHO AFRO ────────────────────────────────────────────────────
   afro_cases_all <- as.numeric(global(mask(bur_valid, layers$v0), "sum", na.rm = TRUE)[1, 1])
   if (!is.finite(afro_cases_all) || afro_cases_all <= 0) afro_cases_all <- NA_real_
-  
-  # ── DENOMINATOR 2 (NEW): cases within species-present range (pres_mask) ────
-  # Rationale: pres_mask (base_p > 0) defines the outer boundary of where
-  # Wolbachia deployment is biologically relevant for the selected species.
-  # Dominance is now computed over all 5 vectors (including An. gambiae),
-  # so dom_share already reflects the correct competitive context.
-  # This answers "of all cases in the species range, what % are captured?"
-  species_range_denom <- as.numeric(
-    global(mask(bur_valid, layers$pres_mask), "sum", na.rm = TRUE)[1, 1]
-  )
-  if (!is.finite(species_range_denom) || species_range_denom <= 0) species_range_denom <- NA_real_
-  # ────────────────────────────────────────────────────────────────────────────
   
   fmt_pct <- function(x, total) {
     if (is.na(total)) return("NA")
@@ -149,10 +150,7 @@ impact_table <- function(tier_r, layers, burden_r, pop_r) {
   fmt_cases_row <- function(x) {
     paste0(
       format(round(x), big.mark = ","),
-      "  |  ",
-      fmt_pct(x, afro_cases_all), "% (AFRO)",
-      "  /  ",
-      fmt_pct(x, species_range_denom), "% (species range)"
+      " (", fmt_pct(x, afro_cases_all), "% of WHO AFRO)"
     )
   }
   
@@ -172,10 +170,11 @@ impact_table <- function(tier_r, layers, burden_r, pop_r) {
       format(round(pop_sums[2]), big.mark = ","),
       format(round(pop_sums[3]), big.mark = ","),
       format(round(pop_sums[4]), big.mark = ","),
-      fmt_cases_row(bur_sums[1]),   # <- shows both % side by side
+      fmt_cases_row(bur_sums[1]),
       fmt_cases_row(bur_sums[2]),
       fmt_cases_row(bur_sums[3]),
       fmt_cases_row(bur_sums[4])
+      # ────────────────────────────────────────────────────────────────────────
     ),
     stringsAsFactors = FALSE
   )
@@ -286,6 +285,10 @@ SPECIES_ALIGNED <- lapply(species_rasters, function(r) fast_align(to01(r), TEMPL
 # Precompute burden raster globally (pop * incidence / 1000) — species-independent
 BURDEN_GLOBAL  <- POP_ALIGNED * (INC_ALIGNED / 1000)
 names(BURDEN_GLOBAL) <- "cases_year"
+
+# Precompute cell area in km² — used for eligible area reporting
+CELL_AREA_KM2 <- cellSize(TEMPLATE, unit = "km")
+names(CELL_AREA_KM2) <- "cell_km2"
 
 # ----------------------------
 # Use-case rules
